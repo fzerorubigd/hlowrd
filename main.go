@@ -23,17 +23,26 @@ type data struct {
 	Url string
 }
 
-var issues map[int]scopes
+type notFoundHandler struct {
+	theme *template.Template
+}
 
-var lock *sync.RWMutex
-
-var theme *template.Template
+var (
+	issues map[int]scopes
+	lock *sync.RWMutex
+	theme *template.Template
+	notFound notFoundHandler
+)
 
 var (
 	address = flag.String("address", "127.0.0.1:8080", "The address to bind")
 	home    = flag.String("home", "", "The home contain all link files")
-	fcgi    = flag.Bool("fcgi", false, "Run fastcgi server instead of http server")
+	static  = flag.Bool("static", false, "Seve static files from template?")
 )
+
+func (nf notFoundHandler)ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	nf.theme.Execute(rw, r)
+}
 
 func loadFile(issue int) error {
 	lock.Lock()
@@ -101,7 +110,7 @@ func handler(rw http.ResponseWriter, r *http.Request) {
 		err := loadFile(issue)
 		if err != nil {
 			log.Print(err)
-			http.Redirect(rw, r, "/", http.StatusNotFound)
+			notFound.ServeHTTP(rw, r)
 			return
 		}
 		issueScopes, _ = issues[issue]
@@ -110,14 +119,14 @@ func handler(rw http.ResponseWriter, r *http.Request) {
 	scopeItems, ok := issueScopes[scope]
 	if !ok {
 		log.Printf("The scope is not valid %d", scope)
-		http.Redirect(rw, r, "/", http.StatusNotFound)
+		notFound.ServeHTTP(rw, r)
 		return
 	}
 
 	target, ok := scopeItems[item]
 	if !ok {
 		log.Printf("The item is not valid %d", item)
-		http.Redirect(rw, r, "/", http.StatusNotFound)
+		notFound.ServeHTTP(rw, r)
 		return
 	}
 
@@ -130,10 +139,15 @@ func handler(rw http.ResponseWriter, r *http.Request) {
 
 func loadTemplate() {
 	var err error
-	theme, err = template.ParseFiles(*home + "templates/redirect.html")
+	theme, err = template.ParseFiles(*home+"templates/redirect.html")
 	if err != nil {
 		log.Println(err)
 		log.Println("Load template failed, just using redirect method.")
+	}
+
+	notFound.theme, err = template.ParseFiles(*home+"templates/notfound.html")
+	if err != nil {
+		log.Println(err)
 	}
 }
 
@@ -151,9 +165,15 @@ func main() {
 	loadTemplate()
 	r := mux.NewRouter()
 	r.HandleFunc("/{issue:[0-9]+}/{scope:[0-9]+}/{item:[0-9]+}", handler)
-	if ok , full, _ := exists(*home + "templates/assets/"); ok {
-		log.Println("Serving assets folder: " + full)
-		r.PathPrefix("/assets").Handler(http.StripPrefix("/assets/",http.FileServer(http.Dir(full))))
+	if *static {
+		if ok , full, _ := exists(*home + "templates/assets/"); ok {
+			log.Println("Serving assets folder: " + full)
+			r.PathPrefix("/assets").Handler(http.StripPrefix("/assets/", http.FileServer(http.Dir(full))))
+		}
+	}
+	if notFound.theme != nil {
+		r.NotFoundHandler = notFound
+		log.Println("Using custom not found handler")
 	}
 	http.Handle("/", r)
 
